@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -251,8 +252,12 @@ func (h *Handler) proxy(down *layer4.Connection, upConns []net.Conn) {
 	// flag to 1 so that we don't report errors unnecessarily
 	var done int32
 
+	wg := sync.WaitGroup{}
+	wg.Add(len(upConns))
 	for _, up := range upConns {
 		go func(up net.Conn) {
+			defer wg.Done()
+
 			_, err := io.Copy(down, up)
 			if err != nil && atomic.LoadInt32(&done) == 0 {
 				h.logger.Error("upstream connection",
@@ -263,6 +268,12 @@ func (h *Handler) proxy(down *layer4.Connection, upConns []net.Conn) {
 			}
 		}(up)
 	}
+
+	go func() {
+		wg.Wait()
+		h.logger.Error("close downstream connection")
+		down.Close()
+	}()
 
 	// read from downstream until connection is closed;
 	// TODO: this pumps the reader, but writing into discard is a weird way to do it; could be avoided if we used io.Pipe - see _gitignore/oldtee.go.txt
